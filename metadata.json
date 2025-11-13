@@ -1,0 +1,5 @@
+{
+  "name": "Score Keeper App",
+  "description": "A dynamic and visually appealing score keeper application to track scores for multiple players across multiple rounds. Features include adding/removing players and rounds, editing names and scores, and automatic total calculation.",
+  "requestFramePermissions": []
+}
