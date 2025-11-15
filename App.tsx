@@ -1,15 +1,50 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import { Player } from "./types";
 import ScoreTable from "./components/ScoreTable";
-import { PlusIcon, RefreshIcon, DownloadIcon } from "./components/Icons";
-
-const INITIAL_PLAYERS: Player[] = [];
+import {
+  PlusIcon,
+  RefreshIcon,
+  DownloadIcon,
+  TrashIcon,
+} from "./components/Icons";
 
 declare const XLSX: any;
 
+const STORAGE_KEY = "score_keeper_data";
+const EXPIRY_TIME = 10 * 60 * 60 * 1000;
+
+interface SavedData {
+  players: Player[];
+  gameTitle: string;
+  timestamp: number;
+}
+
+const loadSavedData = (): SavedData | null => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const parsed: SavedData = JSON.parse(saved);
+      const now = Date.now();
+      if (now - parsed.timestamp < EXPIRY_TIME) {
+        return parsed;
+      } else {
+        // Auto-delete expired record
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to load score data", error);
+  }
+  return null;
+};
+
 const App: React.FC = () => {
-  const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
-  const [gameTitle, setGameTitle] = useState<string>("Score Keeper");
+  const [initialData] = useState<SavedData | null>(() => loadSavedData());
+
+  const [players, setPlayers] = useState<Player[]>(initialData?.players || []);
+  const [gameTitle, setGameTitle] = useState<string>(
+    initialData?.gameTitle || "Score Keeper",
+  );
 
   const numRounds = useMemo(
     () => (players.length > 0 ? players[0].scores.length : 5),
@@ -23,6 +58,15 @@ const App: React.FC = () => {
       return totalB - totalA;
     });
   }, [players]);
+
+  useEffect(() => {
+    const data: SavedData = {
+      players,
+      gameTitle,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }, [players, gameTitle]);
 
   const handleAddPlayer = useCallback(() => {
     setPlayers((prevPlayers) => {
@@ -98,6 +142,18 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const handleClearRecords = useCallback(() => {
+    if (
+      window.confirm(
+        "Are you sure you want to clear all saved records? This will delete data from browser storage and reset the app.",
+      )
+    ) {
+      localStorage.removeItem(STORAGE_KEY);
+      setPlayers([]);
+      setGameTitle("Score Keeper");
+    }
+  }, []);
+
   const handleDownloadExcel = useCallback(() => {
     if (!players.length) return;
 
@@ -116,17 +172,9 @@ const App: React.FC = () => {
     const ws = XLSX.utils.aoa_to_sheet(worksheetData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Scores");
-
-    const now = new Date();
-    const day = now.getDate().toString().padStart(2, "0");
-    const month = (now.getMonth() + 1).toString().padStart(2, "0");
-    const year = now.getFullYear();
-
-    const dateString = `${day}-${month}-${year}`;
-
-    const filename = `Final_Scores_${dateString}.xlsx`;
-    XLSX.writeFile(wb, filename);
-  }, [sortedPlayers, numRounds, players.length]);
+    const safeTitle = gameTitle.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+    XLSX.writeFile(wb, `${safeTitle}_scores.xlsx`);
+  }, [sortedPlayers, numRounds, gameTitle, players.length]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 sm:p-6 lg:p-8">
@@ -167,13 +215,23 @@ const App: React.FC = () => {
             <DownloadIcon />
             Download Excel
           </button>
-          <button
-            onClick={handleNewGame}
-            className="flex items-center gap-2 bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 ml-auto"
-          >
-            <RefreshIcon />
-            New Game
-          </button>
+
+          <div className="ml-auto flex gap-3">
+            <button
+              onClick={handleClearRecords}
+              className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105"
+            >
+              <TrashIcon />
+              Clear Records
+            </button>
+            <button
+              onClick={handleNewGame}
+              className="flex items-center gap-2 bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105"
+            >
+              <RefreshIcon />
+              New Game
+            </button>
+          </div>
         </div>
 
         <ScoreTable
