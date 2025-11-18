@@ -15,16 +15,16 @@ import {
   BarChart2,
   ArrowLeft,
   TrendingUp,
-  Activity,
+  FileText, // Added icon for PDF
 } from "lucide-react";
 
 // --- Constants & Types ---
 const STORAGE_KEY = "score_keeper_data";
 const EXPIRY_TIME = 10 * 60 * 60 * 1000; // 10 hours
 
-// Consistent color palette for Chart lines and Player badges
+// Consistent color palette
 const PLAYER_COLORS = [
-  "#fbbf24", // Amber (Gold-ish)
+  "#fbbf24", // Amber
   "#38bdf8", // Sky Blue
   "#f87171", // Red
   "#34d399", // Emerald
@@ -50,6 +50,46 @@ const useXLSX = () => {
     document.body.appendChild(script);
     return () => {};
   }, []);
+  return isLoaded;
+};
+
+// --- Helper: Load Scripts for PDF Generation ---
+const usePDFLibs = () => {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    const loadScript = (src) => {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.appendChild(script);
+      });
+    };
+
+    const loadLibs = async () => {
+      try {
+        if (!window.html2canvas) {
+          await loadScript(
+            "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",
+          );
+        }
+        if (!window.jspdf) {
+          await loadScript(
+            "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+          );
+        }
+        setIsLoaded(true);
+      } catch (err) {
+        console.error("Failed to load PDF libs", err);
+      }
+    };
+
+    loadLibs();
+  }, []);
+
   return isLoaded;
 };
 
@@ -191,7 +231,7 @@ const ScoreTable = ({
   );
 };
 
-// 2. NEW: Custom SVG Line Chart Component
+// 2. SVG Line Chart Component
 const ScoreLineChart = ({ players }) => {
   const containerRef = useRef(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 300 });
@@ -211,20 +251,14 @@ const ScoreLineChart = ({ players }) => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Prepare Data: Cumulative Scores
+  // Prepare Data
   const data = useMemo(() => {
     if (!players.length) return [];
-    const numRounds = players[0].scores.length;
 
-    // Calculate cumulative scores for each player
     const playerLines = players.map((p, pIdx) => {
       let runningTotal = 0;
       const points = [];
-      // Start at 0,0? Usually better to start at Round 1.
-      // Let's add a "Start" point at 0 if we want, but simple round based is cleaner.
-
-      // Add initial 0 point for clearer race start?
-      points.push({ round: 0, score: 0 });
+      points.push({ round: 0, score: 0 }); // Start point
 
       p.scores.forEach((s, rIdx) => {
         if (s !== null) {
@@ -252,14 +286,13 @@ const ScoreLineChart = ({ players }) => {
     );
 
   const maxRound = Math.max(...allPoints.map((p) => p.round));
-  const minScore = Math.min(0, ...allPoints.map((p) => p.score)); // Ensure 0 is visible
-  const maxScore = Math.max(10, ...allPoints.map((p) => p.score)); // Ensure some height
+  const minScore = Math.min(0, ...allPoints.map((p) => p.score));
+  const maxScore = Math.max(10, ...allPoints.map((p) => p.score));
 
   const padding = { top: 20, right: 30, bottom: 30, left: 40 };
   const chartW = dimensions.width - padding.left - padding.right;
   const chartH = dimensions.height - padding.top - padding.bottom;
 
-  // Helper to map values to SVG coordinates
   const getX = (round) => padding.left + (round / maxRound) * chartW;
   const getY = (score) =>
     padding.top +
@@ -282,7 +315,7 @@ const ScoreLineChart = ({ players }) => {
           viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
           className="overflow-visible"
         >
-          {/* Grid Lines (Y-Axis) */}
+          {/* Grid Lines */}
           {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
             const val = minScore + (maxScore - minScore) * tick;
             const y = getY(val);
@@ -309,7 +342,6 @@ const ScoreLineChart = ({ players }) => {
             );
           })}
 
-          {/* Zero Line Highlighting if within range */}
           {minScore < 0 && maxScore > 0 && (
             <line
               x1={padding.left}
@@ -334,7 +366,6 @@ const ScoreLineChart = ({ players }) => {
 
             return (
               <g key={player.id} className="group">
-                {/* The Line */}
                 <path
                   d={pathD}
                   fill="none"
@@ -344,7 +375,6 @@ const ScoreLineChart = ({ players }) => {
                   strokeLinejoin="round"
                   className="opacity-80 group-hover:opacity-100 group-hover:stroke-[4px] transition-all duration-300"
                 />
-                {/* Data Dots */}
                 {player.points.map((p, i) => (
                   <circle
                     key={i}
@@ -365,7 +395,6 @@ const ScoreLineChart = ({ players }) => {
 
           {/* X-Axis Labels */}
           {Array.from({ length: maxRound + 1 }).map((_, i) => {
-            // Show every round if few, or filter if many
             if (maxRound > 20 && i % 5 !== 0) return null;
             return (
               <text
@@ -402,119 +431,166 @@ const ScoreLineChart = ({ players }) => {
   );
 };
 
-// 3. Stats View Component (Updated)
+// 3. Stats View Component (Updated with PDF)
 const StatsView = ({ players, onBack }) => {
+  const pdfLibsLoaded = usePDFLibs();
+  const statsRef = useRef(null); // Ref to capture
+  const [isGenerating, setIsGenerating] = useState(false);
+
   const getTotal = (p) => p.scores.reduce((sum, s) => sum + (s || 0), 0);
-
-  // Sort players by total
   const sortedPlayers = [...players].sort((a, b) => getTotal(b) - getTotal(a));
-
-  // Calculate Stats
-  let highestRound = { val: -Infinity, player: "", round: 0 };
-  let lowestRound = { val: Infinity, player: "", round: 0 };
-  let allScores = [];
-
-  players.forEach((p) => {
-    p.scores.forEach((s, i) => {
-      if (s !== null) {
-        allScores.push(s);
-        if (s > highestRound.val)
-          highestRound = { val: s, player: p.name, round: i + 1 };
-        if (s < lowestRound.val)
-          lowestRound = { val: s, player: p.name, round: i + 1 };
-      }
-    });
-  });
-
-  const averageScore = allScores.length
-    ? (allScores.reduce((a, b) => a + b, 0) / allScores.length).toFixed(1)
-    : 0;
-
   const maxTotal = sortedPlayers.length > 0 ? getTotal(sortedPlayers[0]) : 100;
 
+  const handleDownloadPDF = async () => {
+    if (!pdfLibsLoaded || !statsRef.current) return;
+    setIsGenerating(true);
+
+    try {
+      const html2canvas = window.html2canvas;
+      const jsPDF = window.jspdf.jsPDF;
+
+      // Capture the DOM element
+      const canvas = await html2canvas(statsRef.current, {
+        scale: 2, // Higher scale for better resolution
+        backgroundColor: "#0f172a", // Match slate-900 background
+        useCORS: true,
+      });
+
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "mm", "a4");
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+
+      const imgProps = pdf.getImageProperties(imgData);
+      const imgWidth = pdfWidth;
+      const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+
+      // Add image to PDF (if height > page, we might need multiple pages, but simple fit for now)
+      pdf.addImage(imgData, "PNG", 0, 0, imgWidth, imgHeight);
+
+      const dateStr = new Date().toISOString().split("T")[0];
+      pdf.save(`score-stats-${dateStr}.pdf`);
+    } catch (error) {
+      console.error("PDF Generation failed", error);
+      alert("Failed to generate PDF. Please try again.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   return (
-    <div className="animate-fade-in space-y-8">
-      <div className="flex items-center gap-4">
+    <div className="animate-fade-in space-y-6">
+      {/* Header with Actions */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onBack}
+            className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+          >
+            <ArrowLeft size={24} />
+          </button>
+          <h2 className="text-3xl font-bold text-white flex items-center gap-2">
+            <BarChart2 className="text-cyan-400" />
+            Detailed Statistics
+          </h2>
+        </div>
+
         <button
-          onClick={onBack}
-          className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+          onClick={handleDownloadPDF}
+          disabled={!pdfLibsLoaded || isGenerating}
+          className="flex items-center gap-2 bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-red-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
         >
-          <ArrowLeft size={24} />
+          <FileText size={20} />
+          {isGenerating ? "Generating..." : "Save as PDF"}
         </button>
-        <h2 className="text-3xl font-bold text-white flex items-center gap-2">
-          <BarChart2 className="text-cyan-400" />
-          Detailed Statistics
-        </h2>
       </div>
 
-      {/* LINE CHART SECTION */}
-      <ScoreLineChart players={players} />
+      {/* CAPTURE AREA: This div and its children will be printed */}
+      <div
+        ref={statsRef}
+        className="space-y-8 p-6 bg-slate-900 rounded-xl border border-slate-800/50"
+      >
+        {/* Header in Capture (so it shows on PDF) */}
+        <div className="flex justify-between items-end border-b border-slate-700 pb-4 mb-4">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Game Results</h1>
+            <p className="text-slate-400 text-sm">
+              {new Date().toLocaleDateString()}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-slate-500 text-xs">Generated by Score Keeper</p>
+          </div>
+        </div>
 
-      {/* Detailed Player Breakdown */}
-      <div className="bg-slate-800/30 border border-slate-700 rounded-xl p-6">
-        <h3 className="text-xl font-bold text-slate-200 mb-6">
-          Player Performance Breakdown
-        </h3>
-        <div className="space-y-6">
-          {sortedPlayers.map((player, idx) => {
-            const total = getTotal(player);
-            const avg = player.scores.filter((s) => s !== null).length
-              ? (
-                  total / player.scores.filter((s) => s !== null).length
-                ).toFixed(1)
-              : 0;
-            const percent = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+        {/* LINE CHART SECTION */}
+        <ScoreLineChart players={players} />
 
-            return (
-              <div key={player.id} className="relative group">
-                <div className="flex justify-between items-end mb-1">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`
-                      w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm
-                      border border-white/10
-                    `}
-                      style={{
-                        backgroundColor: `${PLAYER_COLORS[idx % PLAYER_COLORS.length]}33`, // 20% opacity hex
-                        color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
-                        borderColor: PLAYER_COLORS[idx % PLAYER_COLORS.length],
-                      }}
-                    >
-                      {idx + 1}
+        {/* Detailed Player Breakdown */}
+        <div className="bg-slate-800/30 border border-slate-700 rounded-xl p-6">
+          <h3 className="text-xl font-bold text-slate-200 mb-6">
+            Player Performance Breakdown
+          </h3>
+          <div className="space-y-6">
+            {sortedPlayers.map((player, idx) => {
+              const total = getTotal(player);
+              const avg = player.scores.filter((s) => s !== null).length
+                ? (
+                    total / player.scores.filter((s) => s !== null).length
+                  ).toFixed(1)
+                : 0;
+              const percent = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+
+              return (
+                <div key={player.id} className="relative group">
+                  <div className="flex justify-between items-end mb-1">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm border border-white/10"
+                        style={{
+                          backgroundColor: `${PLAYER_COLORS[idx % PLAYER_COLORS.length]}33`,
+                          color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                          borderColor:
+                            PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                        }}
+                      >
+                        {idx + 1}
+                      </div>
+                      <span className="text-lg font-medium text-slate-200">
+                        {player.name}
+                      </span>
                     </div>
-                    <span className="text-lg font-medium text-slate-200">
-                      {player.name}
-                    </span>
+                    <div className="text-right">
+                      <span
+                        className="text-2xl font-bold"
+                        style={{
+                          color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                        }}
+                      >
+                        {total}
+                      </span>
+                      <span className="text-xs text-slate-500 block">
+                        Avg: {avg} / round
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <span
-                      className="text-2xl font-bold"
-                      style={{
-                        color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
-                      }}
-                    >
-                      {total}
-                    </span>
-                    <span className="text-xs text-slate-500 block">
-                      Avg: {avg} / round
-                    </span>
-                  </div>
-                </div>
 
-                {/* Progress Bar */}
-                <div className="h-3 w-full bg-slate-900 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-1000 ease-out"
-                    style={{
-                      width: `${percent}%`,
-                      backgroundColor:
-                        PLAYER_COLORS[idx % PLAYER_COLORS.length],
-                    }}
-                  />
+                  {/* Progress Bar */}
+                  <div className="h-3 w-full bg-slate-950 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${percent}%`,
+                        backgroundColor:
+                          PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                      }}
+                    />
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
