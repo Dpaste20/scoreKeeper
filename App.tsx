@@ -1,9 +1,38 @@
-import React, { useState, useCallback, useMemo, useEffect } from "react";
-import { Plus, RefreshCw, Download, Trash2, X, Trophy } from "lucide-react";
+import React, {
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+  useRef,
+} from "react";
+import {
+  Plus,
+  RefreshCw,
+  Download,
+  Trash2,
+  X,
+  Trophy,
+  BarChart2,
+  ArrowLeft,
+  TrendingUp,
+  Activity,
+} from "lucide-react";
 
 // --- Constants & Types ---
 const STORAGE_KEY = "score_keeper_data";
 const EXPIRY_TIME = 10 * 60 * 60 * 1000; // 10 hours
+
+// Consistent color palette for Chart lines and Player badges
+const PLAYER_COLORS = [
+  "#fbbf24", // Amber (Gold-ish)
+  "#38bdf8", // Sky Blue
+  "#f87171", // Red
+  "#34d399", // Emerald
+  "#a78bfa", // Purple
+  "#f472b6", // Pink
+  "#fb923c", // Orange
+  "#94a3b8", // Slate
+];
 
 // --- Helper: Load Script for XLSX ---
 const useXLSX = () => {
@@ -19,9 +48,7 @@ const useXLSX = () => {
     script.async = true;
     script.onload = () => setIsLoaded(true);
     document.body.appendChild(script);
-    return () => {
-      // Cleanup if needed, though usually we want this to persist
-    };
+    return () => {};
   }, []);
   return isLoaded;
 };
@@ -46,6 +73,7 @@ const loadSavedData = () => {
 
 // --- Components ---
 
+// 1. The Score Table
 const ScoreTable = ({
   players,
   numRounds,
@@ -163,7 +191,335 @@ const ScoreTable = ({
   );
 };
 
-// --- Main App Component ---
+// 2. NEW: Custom SVG Line Chart Component
+const ScoreLineChart = ({ players }) => {
+  const containerRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 600, height: 300 });
+
+  // Handle resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.offsetWidth,
+          height: 300, // Fixed height
+        });
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Prepare Data: Cumulative Scores
+  const data = useMemo(() => {
+    if (!players.length) return [];
+    const numRounds = players[0].scores.length;
+
+    // Calculate cumulative scores for each player
+    const playerLines = players.map((p, pIdx) => {
+      let runningTotal = 0;
+      const points = [];
+      // Start at 0,0? Usually better to start at Round 1.
+      // Let's add a "Start" point at 0 if we want, but simple round based is cleaner.
+
+      // Add initial 0 point for clearer race start?
+      points.push({ round: 0, score: 0 });
+
+      p.scores.forEach((s, rIdx) => {
+        if (s !== null) {
+          runningTotal += s;
+          points.push({ round: rIdx + 1, score: runningTotal });
+        }
+      });
+      return {
+        id: p.id,
+        name: p.name,
+        color: PLAYER_COLORS[pIdx % PLAYER_COLORS.length],
+        points: points,
+      };
+    });
+    return playerLines;
+  }, [players]);
+
+  // Calculate Scales
+  const allPoints = data.flatMap((d) => d.points);
+  if (allPoints.length === 0)
+    return (
+      <div className="h-[300px] flex items-center justify-center text-slate-500">
+        Not enough data
+      </div>
+    );
+
+  const maxRound = Math.max(...allPoints.map((p) => p.round));
+  const minScore = Math.min(0, ...allPoints.map((p) => p.score)); // Ensure 0 is visible
+  const maxScore = Math.max(10, ...allPoints.map((p) => p.score)); // Ensure some height
+
+  const padding = { top: 20, right: 30, bottom: 30, left: 40 };
+  const chartW = dimensions.width - padding.left - padding.right;
+  const chartH = dimensions.height - padding.top - padding.bottom;
+
+  // Helper to map values to SVG coordinates
+  const getX = (round) => padding.left + (round / maxRound) * chartW;
+  const getY = (score) =>
+    padding.top +
+    chartH -
+    ((score - minScore) / (maxScore - minScore)) * chartH;
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full bg-slate-800/50 border border-slate-700 rounded-xl p-4 shadow-lg"
+    >
+      <h3 className="text-slate-300 font-semibold mb-4 flex items-center gap-2">
+        <TrendingUp size={18} className="text-cyan-400" />
+        Score Progression (Cumulative)
+      </h3>
+      <div className="relative h-[300px] w-full">
+        <svg
+          width="100%"
+          height="100%"
+          viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+          className="overflow-visible"
+        >
+          {/* Grid Lines (Y-Axis) */}
+          {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+            const val = minScore + (maxScore - minScore) * tick;
+            const y = getY(val);
+            return (
+              <g key={tick}>
+                <line
+                  x1={padding.left}
+                  y1={y}
+                  x2={dimensions.width - padding.right}
+                  y2={y}
+                  stroke="#334155"
+                  strokeDasharray="4"
+                />
+                <text
+                  x={padding.left - 10}
+                  y={y + 4}
+                  textAnchor="end"
+                  fill="#64748b"
+                  fontSize="10"
+                >
+                  {Math.round(val)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Zero Line Highlighting if within range */}
+          {minScore < 0 && maxScore > 0 && (
+            <line
+              x1={padding.left}
+              y1={getY(0)}
+              x2={dimensions.width - padding.right}
+              y2={getY(0)}
+              stroke="#94a3b8"
+              strokeWidth="1"
+              opacity="0.5"
+            />
+          )}
+
+          {/* Player Lines */}
+          {data.map((player) => {
+            if (player.points.length < 2) return null;
+            const pathD = player.points
+              .map(
+                (p, i) =>
+                  `${i === 0 ? "M" : "L"} ${getX(p.round)} ${getY(p.score)}`,
+              )
+              .join(" ");
+
+            return (
+              <g key={player.id} className="group">
+                {/* The Line */}
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke={player.color}
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="opacity-80 group-hover:opacity-100 group-hover:stroke-[4px] transition-all duration-300"
+                />
+                {/* Data Dots */}
+                {player.points.map((p, i) => (
+                  <circle
+                    key={i}
+                    cx={getX(p.round)}
+                    cy={getY(p.score)}
+                    r="4"
+                    fill={player.color}
+                    stroke="#1e293b"
+                    strokeWidth="2"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <title>{`${player.name}: ${p.score} (Round ${p.round})`}</title>
+                  </circle>
+                ))}
+              </g>
+            );
+          })}
+
+          {/* X-Axis Labels */}
+          {Array.from({ length: maxRound + 1 }).map((_, i) => {
+            // Show every round if few, or filter if many
+            if (maxRound > 20 && i % 5 !== 0) return null;
+            return (
+              <text
+                key={i}
+                x={getX(i)}
+                y={dimensions.height - 5}
+                textAnchor="middle"
+                fill="#64748b"
+                fontSize="10"
+              >
+                {i === 0 ? "Start" : i}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap justify-center gap-4 mt-4 pt-4 border-t border-slate-700/50">
+        {data.map((p) => (
+          <div
+            key={p.id}
+            className="flex items-center gap-2 text-xs sm:text-sm text-slate-300"
+          >
+            <span
+              className="w-3 h-3 rounded-full"
+              style={{ backgroundColor: p.color }}
+            ></span>
+            {p.name}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// 3. Stats View Component (Updated)
+const StatsView = ({ players, onBack }) => {
+  const getTotal = (p) => p.scores.reduce((sum, s) => sum + (s || 0), 0);
+
+  // Sort players by total
+  const sortedPlayers = [...players].sort((a, b) => getTotal(b) - getTotal(a));
+
+  // Calculate Stats
+  let highestRound = { val: -Infinity, player: "", round: 0 };
+  let lowestRound = { val: Infinity, player: "", round: 0 };
+  let allScores = [];
+
+  players.forEach((p) => {
+    p.scores.forEach((s, i) => {
+      if (s !== null) {
+        allScores.push(s);
+        if (s > highestRound.val)
+          highestRound = { val: s, player: p.name, round: i + 1 };
+        if (s < lowestRound.val)
+          lowestRound = { val: s, player: p.name, round: i + 1 };
+      }
+    });
+  });
+
+  const averageScore = allScores.length
+    ? (allScores.reduce((a, b) => a + b, 0) / allScores.length).toFixed(1)
+    : 0;
+
+  const maxTotal = sortedPlayers.length > 0 ? getTotal(sortedPlayers[0]) : 100;
+
+  return (
+    <div className="animate-fade-in space-y-8">
+      <div className="flex items-center gap-4">
+        <button
+          onClick={onBack}
+          className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+        >
+          <ArrowLeft size={24} />
+        </button>
+        <h2 className="text-3xl font-bold text-white flex items-center gap-2">
+          <BarChart2 className="text-cyan-400" />
+          Detailed Statistics
+        </h2>
+      </div>
+
+      {/* LINE CHART SECTION */}
+      <ScoreLineChart players={players} />
+
+      {/* Detailed Player Breakdown */}
+      <div className="bg-slate-800/30 border border-slate-700 rounded-xl p-6">
+        <h3 className="text-xl font-bold text-slate-200 mb-6">
+          Player Performance Breakdown
+        </h3>
+        <div className="space-y-6">
+          {sortedPlayers.map((player, idx) => {
+            const total = getTotal(player);
+            const avg = player.scores.filter((s) => s !== null).length
+              ? (
+                  total / player.scores.filter((s) => s !== null).length
+                ).toFixed(1)
+              : 0;
+            const percent = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+
+            return (
+              <div key={player.id} className="relative group">
+                <div className="flex justify-between items-end mb-1">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`
+                      w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm
+                      border border-white/10
+                    `}
+                      style={{
+                        backgroundColor: `${PLAYER_COLORS[idx % PLAYER_COLORS.length]}33`, // 20% opacity hex
+                        color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                        borderColor: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                      }}
+                    >
+                      {idx + 1}
+                    </div>
+                    <span className="text-lg font-medium text-slate-200">
+                      {player.name}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span
+                      className="text-2xl font-bold"
+                      style={{
+                        color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                      }}
+                    >
+                      {total}
+                    </span>
+                    <span className="text-xs text-slate-500 block">
+                      Avg: {avg} / round
+                    </span>
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="h-3 w-full bg-slate-900 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-1000 ease-out"
+                    style={{
+                      width: `${percent}%`,
+                      backgroundColor:
+                        PLAYER_COLORS[idx % PLAYER_COLORS.length],
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const App = () => {
   const xlsxLoaded = useXLSX();
@@ -173,6 +529,7 @@ const App = () => {
   const [gameTitle, setGameTitle] = useState(
     initialData?.gameTitle || "Score Keeper",
   );
+  const [currentView, setCurrentView] = useState("GAME"); // "GAME" or "STATS"
 
   const numRounds = useMemo(
     () => (players.length > 0 ? players[0].scores.length : 5),
@@ -308,39 +665,43 @@ const App = () => {
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "Scores");
 
-    // --- DATE FORMATTING START ---
     const now = new Date();
     const day = String(now.getDate()).padStart(2, "0");
-    const month = String(now.getMonth() + 1).padStart(2, "0"); // Months are 0-indexed
+    const month = String(now.getMonth() + 1).padStart(2, "0");
     const year = now.getFullYear();
     const dateString = `${day}-${month}-${year}`;
-    // --- DATE FORMATTING END ---
 
     const safeTitle = gameTitle.replace(/[^a-z0-9]/gi, "_").toLowerCase();
-
-    // Save with date string (Using hyphens for OS compatibility)
     window.XLSX.writeFile(wb, `${safeTitle}_${dateString}.xlsx`);
   }, [sortedPlayers, numRounds, gameTitle, players.length]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 sm:p-6 lg:p-8 font-sans">
       <main className="max-w-7xl mx-auto">
+        {/* Header */}
         <header className="mb-8 border-b border-slate-800 pb-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <input
-                value={gameTitle}
-                onChange={(e) => setGameTitle(e.target.value)}
-                className="text-3xl sm:text-4xl font-bold tracking-tight text-white bg-transparent outline-none focus:ring-2 focus:ring-cyan-500 rounded-lg p-2 -ml-2 w-full max-w-lg placeholder-slate-600"
-                placeholder="Enter Game Name..."
-                aria-label="Game Title"
-              />
-              <p className="mt-2 text-slate-400 flex items-center gap-2">
-                <Trophy size={16} className="text-cyan-500" />
-                Highest Scores automatically on top
-              </p>
+              {currentView === "GAME" ? (
+                <>
+                  <input
+                    value={gameTitle}
+                    onChange={(e) => setGameTitle(e.target.value)}
+                    className="text-3xl sm:text-4xl font-bold tracking-tight text-white bg-transparent outline-none focus:ring-2 focus:ring-cyan-500 rounded-lg p-2 -ml-2 w-full max-w-lg placeholder-slate-600"
+                    placeholder="Enter Game Name..."
+                    aria-label="Game Title"
+                  />
+                  <p className="mt-2 text-slate-400 flex items-center gap-2">
+                    <Trophy size={16} className="text-cyan-500" />
+                    Highest Scores automatically on top
+                  </p>
+                </>
+              ) : (
+                <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white p-2 -ml-2">
+                  {gameTitle}
+                </h1>
+              )}
             </div>
-            {/* Stats Summary (Optional Visual) */}
             <div className="flex gap-4 text-sm font-medium text-slate-400">
               <div className="bg-slate-800 px-3 py-2 rounded-md">
                 Players: <span className="text-white">{players.length}</span>
@@ -352,57 +713,79 @@ const App = () => {
           </div>
         </header>
 
-        <div className="flex flex-wrap gap-3 mb-6">
-          <button
-            onClick={handleAddPlayer}
-            className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-cyan-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
-          >
-            <Plus size={20} />
-            Add Player
-          </button>
-          <button
-            onClick={handleAddRound}
-            className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-all hover:-translate-y-0.5 active:translate-y-0"
-          >
-            <Plus size={20} />
-            Add Round
-          </button>
-          <button
-            onClick={handleDownloadExcel}
-            disabled={players.length === 0 || !xlsxLoaded}
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-emerald-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed disabled:transform-none"
-            title={!xlsxLoaded ? "Loading Excel library..." : "Download .xlsx"}
-          >
-            <Download size={20} />
-            Excel
-          </button>
+        {/* View Switching */}
+        {currentView === "STATS" ? (
+          <StatsView players={players} onBack={() => setCurrentView("GAME")} />
+        ) : (
+          <>
+            {/* Toolbar */}
+            <div className="flex flex-wrap gap-3 mb-6">
+              <button
+                onClick={handleAddPlayer}
+                className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-cyan-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
+              >
+                <Plus size={20} />
+                Add Player
+              </button>
+              <button
+                onClick={handleAddRound}
+                className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-all hover:-translate-y-0.5 active:translate-y-0"
+              >
+                <Plus size={20} />
+                Add Round
+              </button>
 
-          <div className="ml-auto flex gap-3 w-full sm:w-auto mt-4 sm:mt-0 justify-end">
-            <button
-              onClick={handleClearRecords}
-              className="flex items-center gap-2 text-slate-400 hover:text-orange-400 hover:bg-slate-800 py-2 px-4 rounded-lg transition-colors"
-            >
-              <Trash2 size={18} />
-              <span className="hidden sm:inline">Clear Data</span>
-            </button>
-            <button
-              onClick={handleNewGame}
-              className="flex items-center gap-2 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-rose-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
-            >
-              <RefreshCw size={18} />
-              New Game
-            </button>
-          </div>
-        </div>
+              {/* Stats Button */}
+              <button
+                onClick={() => setCurrentView("STATS")}
+                disabled={players.length === 0}
+                className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-purple-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+              >
+                <BarChart2 size={20} />
+                Detailed Stats
+              </button>
 
-        <ScoreTable
-          players={sortedPlayers}
-          numRounds={numRounds}
-          onScoreChange={handleScoreChange}
-          onNameChange={handleNameChange}
-          onRemovePlayer={handleRemovePlayer}
-          onRemoveRound={handleRemoveRound}
-        />
+              <button
+                onClick={handleDownloadExcel}
+                disabled={players.length === 0 || !xlsxLoaded}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-emerald-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed disabled:transform-none"
+                title={
+                  !xlsxLoaded ? "Loading Excel library..." : "Download .xlsx"
+                }
+              >
+                <Download size={20} />
+                Excel
+              </button>
+
+              <div className="ml-auto flex gap-3 w-full sm:w-auto mt-4 sm:mt-0 justify-end">
+                <button
+                  onClick={handleClearRecords}
+                  className="flex items-center gap-2 text-slate-400 hover:text-orange-400 hover:bg-slate-800 py-2 px-4 rounded-lg transition-colors"
+                >
+                  <Trash2 size={18} />
+                  <span className="hidden sm:inline">Clear Data</span>
+                </button>
+                <button
+                  onClick={handleNewGame}
+                  className="flex items-center gap-2 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg shadow-rose-900/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
+                >
+                  <RefreshCw size={18} />
+                  New Game
+                </button>
+              </div>
+            </div>
+
+            {/* Main Table */}
+            <ScoreTable
+              players={sortedPlayers}
+              numRounds={numRounds}
+              onScoreChange={handleScoreChange}
+              onNameChange={handleNameChange}
+              onRemovePlayer={handleRemovePlayer}
+              onRemoveRound={handleRemoveRound}
+            />
+          </>
+        )}
       </main>
     </div>
   );
